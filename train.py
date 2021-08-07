@@ -11,6 +11,7 @@ from configurations.train_config import cfg
 from utils.image import Compose, ToTensor, RandomHorizontalFlip
 from utils.ploting import plot_loss_and_lr, plot_map
 from utils.training import train_one_epoch, write_tb, create_model
+import argparse
 
 
 def get_device(cuda=True):
@@ -31,7 +32,9 @@ def get_device(cuda=True):
     return device
 
 
-def main():
+def main(model_save_dir):
+    # checkpoints path
+    cfg.model_save_dir = model_save_dir
     device = get_device(cuda=True)
     print("Using {} device training.".format(device.type))
 
@@ -50,7 +53,7 @@ def main():
         raise FileNotFoundError("dataset root dir not exist!")
 
     # load train data set
-    train_data_set = CustomDataLoader(cfg.data_root_dir, 'train', '2017', data_transform["train"])
+    train_data_set = CustomDataLoader(cfg.data_root_dir, 'train', data_transform["train"])
     batch_size = cfg.batch_size
     nw = min([os.cpu_count(), batch_size if batch_size > 1 else 0, 8])
     print('Using {} dataloader workers'.format(nw))
@@ -61,7 +64,7 @@ def main():
                                                     collate_fn=train_data_set.collate_fn)
 
     # load validation data set
-    val_data_set = CustomDataLoader(cfg.data_root_dir, 'val', '2017', data_transform["val"])
+    val_data_set = CustomDataLoader(cfg.data_root_dir, 'val', data_transform["val"])
     val_data_set_loader = torch.utils.data.DataLoader(val_data_set,
                                                       batch_size=batch_size,
                                                       shuffle=False,
@@ -147,6 +150,13 @@ def main():
 
 
 if __name__ == "__main__":
+    # parser
+    parser = argparse.ArgumentParser(description='Faster R-CNN')
+    parser.add_argument("--model_save_dir", type=str, default="checkpoint",
+                        help="path to directory where checkpoints will be stored.")
+    args = parser.parse_args()
+    print('Dump Path: ', args.model_save_dir)
+
     version = torch.version.__version__[:5]
     print('torch version is {}'.format(version))
-    main()
+    main(args.model_save_dir)

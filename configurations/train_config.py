@@ -42,11 +42,11 @@ class Config:
     box_positive_fraction = 0.25
     bbox_reg_weights = None
 
-    device_name = 'cpu'
+    device_name = 'cuda:0'
 
     resume = ''  # pretrained_weights
     start_epoch = 0  # start epoch
-    num_epochs = 2  # train epochs
+    num_epochs = 100  # train epochs
 
     # learning rate parameters
     lr = 5e-3

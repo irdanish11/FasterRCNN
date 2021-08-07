@@ -9,12 +9,11 @@ from torch.utils.data import Dataset
 
 
 class CustomDataLoader(Dataset):
-    def __init__(self, root_dir, image_set, year, transforms=None):
+    def __init__(self, root_dir, image_set, transforms=None):
 
         self._root_dir = root_dir
-        self._year = year
         self._image_set = image_set
-        self._data_name = image_set + year
+        self._data_name = image_set
         self._json_path = self._get_ann_file()
         self._transforms = transforms
 
@@ -42,7 +41,7 @@ class CustomDataLoader(Dataset):
 
     def _get_ann_file(self):
         prefix = 'instances' if self._image_set.find('test') == -1 else 'image_info'
-        return os.path.join(self._root_dir, 'annotations', prefix + '_' + self._image_set + self._year + '.json')
+        return os.path.join(self._root_dir, 'annotations', prefix + '_' + self._image_set + '.json')
 
     def __getitem__(self, idx):
         a = self.anno['images'][idx]
