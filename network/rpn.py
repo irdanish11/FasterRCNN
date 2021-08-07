@@ -1,12 +1,20 @@
 from torch import nn
 from torch.jit.annotations import Dict
 from torch.nn import functional as F
-import torch
+
 import utils.boxes as box_op
-from utils.detection import BoxCoder, Matcher, BalancedPositiveNegativeSampler, smooth_l1_loss
+from utils.detection import *
 
 
 class RPNHead(nn.Module):
+    """
+     RPN head with background/foreground classification and bbox regression
+     :param self:
+     :param in_channels: number of channels of the input feature
+     :param num_anchors: number of anchors to be predicted
+     :return:
+    """
+
     def __init__(self, in_channels, num_anchors):
 
         super(RPNHead, self).__init__()
@@ -24,7 +32,7 @@ class RPNHead(nn.Module):
                 torch.nn.init.normal_(layer.weight, std=0.01)
                 torch.nn.init.constant_(layer.bias, 0)
 
-    def f__call__(self, x):
+    def forward(self, x):
         cls_scores = []
         bbox_reg = []
         for i, feature in enumerate(x):
@@ -35,6 +43,26 @@ class RPNHead(nn.Module):
 
 
 class RegionProposalNetwork(torch.nn.Module):
+    """
+     Implementation of Region Proposal Network (RPN).
+     :param anchor_generator: module that generates the anchors for feature map.
+     :param head: module that computes the objectness and regression deltas
+     :param fg_iou_thresh: minimum IoU between the anchor and the GT box so that they can be
+            considered as positive during training of the RPN.
+     :param bg_iou_thresh: maximum IoU between the anchor and the GT box so that they can be
+            considered as negative during training of the RPN.
+     :param batch_size_per_image: number of anchors that are sampled during training of the RPN
+            for computing the loss
+     :param positive_fraction: proportion of positive anchors in a mini-batch during training
+            of the RPN
+     :param pre_nms_top_n: number of proposals to keep before applying NMS. It should
+            contain two fields: training and testing, to allow for different values depending
+            on training or evaluation
+     :param post_nms_top_n: number of proposals to keep after applying NMS. It should
+            contain two fields: training and testing, to allow for different values depending
+            on training or evaluation
+     :param nms_thresh: NMS threshold used for postprocessing the RPN proposals
+     """
 
     def __init__(self, anchor_generator, head, fg_iou_thresh, bg_iou_thresh, batch_size_per_image, positive_fraction,
                  pre_nms_top_n, post_nms_top_n, nms_thresh):
@@ -75,6 +103,14 @@ class RegionProposalNetwork(torch.nn.Module):
         return self._post_nms_top_n['testing']
 
     def assign_targets_to_anchors(self, anchors, targets):
+        """
+        get the best match gt for anchors, divided into bg samples, fg samples and unused samples
+        :param anchors: (List[Tensor])
+        :param targets: (List[Dict[Tensor])
+        :return: labels: anchors cls, 1 is foreground, 0 is background, -1 is unused
+            matched_gt_boxes：best matched gt
+        """
+
         labels = []
         matched_gt_boxes = []
         for anchors_per_image, targets_per_image in zip(anchors, targets):
@@ -111,6 +147,13 @@ class RegionProposalNetwork(torch.nn.Module):
         return labels, matched_gt_boxes
 
     def _get_top_n_idx(self, objectness, num_anchors_per_level):
+        """
+        get thr top pre_nms_top_n anchor index in predicted feature_maps based on scores
+        :param objectness: scores
+        :param num_anchors_per_level: number of anchors
+        :return:
+        """
+
         result = []
         offset = 0
         for ob in objectness.split(num_anchors_per_level, 1):
@@ -124,6 +167,15 @@ class RegionProposalNetwork(torch.nn.Module):
         return torch.cat(result, dim=1)
 
     def filter_proposals(self, proposals, objectness, image_shapes, num_anchors_per_level):
+        """
+        remove small bboxes, nms process, get post_nms_top_n target
+        :param proposals: predicted bbox coordinates
+        :param objectness: predicted scores
+        :param image_shapes: image shape
+        :param num_anchors_per_level: number od anchors of per feature_maps
+        :return:
+        """
+
         num_images = proposals.shape[0]
         device = proposals.device
 
@@ -170,6 +222,16 @@ class RegionProposalNetwork(torch.nn.Module):
         return final_boxes, final_scores
 
     def compute_loss(self, objectness, pred_bbox_deltas, labels, regression_targets):
+        """
+        compute RPN loss, include classification loss(foreground and background), bbox regression loss
+        :param objectness: predicted foreground probability
+        :param pred_bbox_deltas: predicted bbox regression parameters
+        :param labels: true lable, 1, 0 and -1
+        :param regression_targets: true bbox regression
+        :return: objectness_loss (Tensor) : classification loss
+                 box_loss (Tensor)：bbox loss
+        """
+
         # selective positive and negative samples
         sampled_pos_inds, sampled_neg_inds = self.fg_bg_sampler(labels)
 
@@ -191,7 +253,20 @@ class RegionProposalNetwork(torch.nn.Module):
 
         return objectness_loss, box_loss
 
-    def __call__(self, images, features, targets=None):
+    def forward(self, images, features, targets=None):
+        """
+        :param images: (ImageList), images for which we want to compute the predictions
+        :param features: (Dict[Tensor]), features computed from the images that are
+                used for computing the predictions. Each tensor in the list
+                correspond to different feature levels
+        :param targets: (List[Dict[Tensor]), ground-truth boxes present in the image (optional).
+                If provided, each element in the dict should contain a field `boxes`,
+                with the locations of the ground-truth boxes.
+        :return:
+              boxes (List[Tensor]): the predicted boxes from the RPN image.
+              losses (Dict[Tensor]): the losses for the model during training. During testing, it is an empty dict.
+        """
+
         # RPN uses all feature maps that are available
         features = list(features.values())
 

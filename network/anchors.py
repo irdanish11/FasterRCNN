@@ -3,6 +3,15 @@ from torch import nn
 
 
 def generate_anchors(scales, aspect_ratios, dtype=torch.float32, device="cpu"):
+    """
+     generate anchor template based on sizes and ratios, generated template is centered at [0, 0]
+     :param scales: anchor sizes, in tuple[int]
+     :param aspect_ratios: anchor ratios, in tuple[float]
+     :param dtype: data type
+     :param device: date device
+     :return:
+     """
+
     scales = torch.as_tensor(scales, dtype=dtype, device=device)
     aspect_ratios = torch.as_tensor(aspect_ratios, dtype=dtype, device=device)
     h_ratios = torch.sqrt(aspect_ratios)
@@ -21,14 +30,30 @@ def generate_anchors(scales, aspect_ratios, dtype=torch.float32, device="cpu"):
 
 
 class AnchorsGenerator(nn.Module):
+    """
+    anchor generator for feature maps according to anchor sizes and ratios
+    :param sizes: anchor sizes, in tuple[int]
+    :param aspect_ratios: anchor ratios, in tuple[float]
+    :return:
+    """
+
     def __init__(self, sizes=(128, 256, 512), aspect_ratios=(0.5, 1.0, 2.0)):
         super(AnchorsGenerator, self).__init__()
+
+        # assert len(sizes) == len(aspect_ratios), 'anchor sizes must equal to anchor ratios!'
+
         self.sizes = sizes
         self.aspect_ratios = aspect_ratios
         self.cell_anchors = None
         self._cache = {}
 
     def set_cell_anchors(self, dtype, device):
+        """
+        generate template template
+        :param dtype: data type
+        :param device: data device
+        :return:
+        """
         if self.cell_anchors is not None:
             cell_anchors = self.cell_anchors
             assert cell_anchors is not None
@@ -98,7 +123,14 @@ class AnchorsGenerator(nn.Module):
         self._cache[key] = anchors
         return anchors
 
-    def __call__(self, image_list, feature_maps):
+    def forward(self, image_list, feature_maps):
+        """
+        get feature map sizes
+        :param image_list:
+        :param feature_maps:
+        :return:
+        """
+
         feature_map_sizes = list([feature_map.shape[-2:] for feature_map in feature_maps])
 
         # get input image sizes
