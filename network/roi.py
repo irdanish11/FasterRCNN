@@ -1,11 +1,22 @@
 import torch.nn.functional as F
+from torch import Tensor
 from torch.jit.annotations import List, Dict, Tuple
-import torch
+
 import utils.boxes as box_op
-from utils.detection import BoxCoder, Matcher, BalancedPositiveNegativeSampler, smooth_l1_loss
+from utils.detection import *
 
 
 def fastrcnn_loss(class_logits, box_regression, labels, regression_targets):
+    """
+    Computes the loss for Faster R-CNN.
+    :param class_logits: predicted class, shape=[num_anchors, num_classes]
+    :param box_regression: predicted bbox regression
+    :param labels: true label
+    :param regression_targets: true bbox
+    :return: classification_loss (Tensor)
+             box_loss (Tensor)
+    """
+
     labels = torch.cat(labels, dim=0)
     regression_targets = torch.cat(regression_targets, dim=0)
 
@@ -94,6 +105,14 @@ class RoIHeads(torch.nn.Module):
         self.detection_per_img = detection_per_img
 
     def assign_targets_to_proposals(self, proposals, gt_boxes, gt_labels):
+        """
+        get the matched gt_bbox for every anchors, and set positive/negative samples
+        :param proposals:
+        :param gt_boxes:
+        :param gt_labels:
+        :return:
+        """
+
         matched_idxs = []
         labels = []
         for proposals_in_image, gt_boxes_in_image, gt_labels_in_image in zip(proposals, gt_boxes, gt_labels):
@@ -137,7 +156,11 @@ class RoIHeads(torch.nn.Module):
             sampled_inds.append(img_sampled_inds)
         return sampled_inds
 
-    def select_training_samples(self, proposals, targets):
+    def select_training_samples(self,
+                                proposals,
+                                targets
+                                ):
+
         check_targets(targets)
         assert targets is not None
         dtype = proposals[0].dtype
@@ -171,23 +194,54 @@ class RoIHeads(torch.nn.Module):
         regression_targets = self.box_coder.encode(matched_gt_boxes, proposals)
         return proposals, matched_idxs, labels, regression_targets
 
-    def postprocess_detections(self, class_logits, box_regression, proposals, image_shapes):
+    def postprocess_detections(self,
+                               class_logits,
+                               box_regression,
+                               proposals,
+                               image_shapes
+                               ):
+        """
+        对网络的预测数据进行后处理，包括
+        （1）根据proposal以及预测的回归参数计算出最终bbox坐标
+        （2）对预测类别结果进行softmax处理
+        （3）裁剪预测的boxes信息，将越界的坐标调整到图片边界上
+        （4）移除所有背景信息
+        （5）移除低概率目标
+        （6）移除小尺寸目标
+        （7）执行nms处理，并按scores进行排序
+        （8）根据scores排序返回前topk个目标
+        Args:
+            class_logits: 网络预测类别概率信息
+            box_regression: 网络预测的边界框回归参数
+            proposals: rpn输出的proposal
+            image_shapes: 打包成batch前每张图像的宽高
+
+        Returns:
+
+        """
         device = class_logits.device
+        # 预测目标类别数
         num_classes = class_logits.shape[-1]
 
+        # 获取每张图像的预测bbox数量
         boxes_per_image = [boxes_in_image.shape[0] for boxes_in_image in proposals]
+        # 根据proposal以及预测的回归参数计算出最终bbox坐标
         pred_boxes = self.box_coder.decode(box_regression, proposals)
 
+        # 对预测类别结果进行softmax处理
         pred_scores = F.softmax(class_logits, -1)
 
         # split boxes and scores per image
+        # 根据每张图像的预测bbox数量分割结果
         pred_boxes_list = pred_boxes.split(boxes_per_image, 0)
         pred_scores_list = pred_scores.split(boxes_per_image, 0)
 
         all_boxes = []
         all_scores = []
         all_labels = []
+        # 遍历每张图像预测信息
         for boxes, scores, image_shape in zip(pred_boxes_list, pred_scores_list, image_shapes):
+            # 裁剪预测的boxes信息，将越界的坐标调整到图片边界上
             boxes = box_op.clip_boxes_to_image(boxes, image_shape)
 
             # create labels for each prediction
@@ -195,6 +249,7 @@ class RoIHeads(torch.nn.Module):
             labels = labels.view(1, -1).expand_as(scores)
 
             # remove prediction with the background label
+            # 移除索引为0的所有信息（0代表背景）
             boxes = boxes[:, 1:]
             scores = scores[:, 1:]
             labels = labels[:, 1:]
@@ -205,17 +260,21 @@ class RoIHeads(torch.nn.Module):
             labels = labels.reshape(-1)
 
             # remove low scoring boxes
+            # 移除低概率目标，self.scores_thresh=0.05
             inds = torch.nonzero(scores > self.score_thresh).squeeze(1)
             boxes, scores, labels = boxes[inds], scores[inds], labels[inds]
 
             # remove empty boxes
+            # 移除小目标
             keep = box_op.remove_small_boxes(boxes, min_size=1e-2)
             boxes, scores, labels = boxes[keep], scores[keep], labels[keep]
 
             # non-maximun suppression, independently done per class
+            # 执行nms处理，执行后的结果会按照scores从大到小进行排序返回
             keep = box_op.batched_nms(boxes, scores, labels, self.nms_thresh)
 
             # keep only topk scoring predictions
+            # 获取scores排在前topk个预测目标
             keep = keep[:self.detection_per_img]
             boxes, scores, labels = boxes[keep], scores[keep], labels[keep]
 
@@ -225,7 +284,20 @@ class RoIHeads(torch.nn.Module):
 
         return all_boxes, all_scores, all_labels
 
-    def __call__(self, features, proposals, image_shapes, targets=None):
+    def forward(self,
+                features,
+                proposals,
+                image_shapes,
+                targets=None
+                ):
+        """
+        Arguments:
+            features (List[Tensor])
+            proposals (List[Tensor[N, 4]])
+            image_shapes (List[Tuple[H, W]])
+            targets (List[Dict])
+        """
+
         if targets is not None:
             for t in targets:
                 floating_point_types = (torch.float, torch.double, torch.half)
@@ -233,14 +305,18 @@ class RoIHeads(torch.nn.Module):
                 # assert t["labels"].dtype == torch.int64, "target labels must of int64 type"
 
         if self.training:
+            # 划分正负样本，统计对应gt的标签以及边界框回归信息
             proposals, matched_idxs, labels, regression_targets = self.select_training_samples(proposals, targets)
         else:
             labels = None
             regression_targets = None
             matched_idxs = None
 
+        # 将采集样本通过roi_pooling层
         box_features = self.box_roi_pool(features, proposals, image_shapes)
+        # 通过roi_pooling后的两层全连接层
         box_features = self.box_head(box_features)
+        # 接着分别预测目标类别和边界框回归参数
         class_logits, box_regression = self.box_predictor(box_features)
 
         result = torch.jit.annotate(List[Dict[str, torch.Tensor]], [])
@@ -264,4 +340,5 @@ class RoIHeads(torch.nn.Module):
                         "scores": scores[i],
                     }
                 )
+
         return result, losses
